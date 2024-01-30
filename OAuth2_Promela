@@ -1,0 +1,175 @@
+mtype:msg = { REQUEST, RESPONSE };
+mtype:scope = { FULL, PARTIAL };
+mtype:restype = { CODE, TOKEN };
+mtype:grantype = { AUTH, OTHER };
+
+chan URS = [2] of { mtype:msg, mtype:scope };
+chan CRA = [5] of { mtype:msg, int, int, int, mtype:restype } //CID, URI, I-STATE
+chan AR  = [3] of { mtype:msg, int, int} //Authcode, user_state
+chan RR  = [5] of { mtype:msg, int, int, int, mtype:grantype} //CID, URI, AC
+chan RT  = [5] of { mtype:msg, int, int, int, mtype:grantype} //CID, URI, AC
+chan ST  = [2] of { mtype:msg, int } //TK
+chan AD  = [2] of { mtype:msg, int } ///TK
+chan GD  = [2] of { mtype:msg, int } //1 accept else reject
+chan UDA = [2] of { mtype:msg, int } //DATA
+
+proctype User() {
+	mtype:scope U_Scope = PARTIAL;
+	int U_URI;
+	int U_CID;
+	int U_AC = 5;
+	int U_i_state;
+	mtype:restype U_RES;	
+	int state = 0;
+	
+	do
+	:: state == 0 ->
+		URS ! REQUEST, U_Scope;
+		state = 1;
+	:: state == 1 ->
+		CRA ? RESPONSE, U_CID, U_URI, U_i_state, U_RES;
+		if
+		:: U_AC != -1 ->
+			state = 2;
+		:: else ->
+			state = 0; //ERROR
+		fi
+	:: state == 2 ->
+		AR ! RESPONSE, U_AC, U_i_state;
+		state = 3;
+	:: state == 3 ->
+		if
+		:: U_AC != -1 ->
+			RR ! RESPONSE, U_CID, U_URI, U_AC, AUTH;
+			state = 0;
+		:: else ->
+			state = 0; //ERROR
+		fi		
+	od
+}
+		
+
+proctype Client() {
+	mtype:scope C_Scope = PARTIAL;
+	int C_URI = 1;
+	int C_CID = 86137;
+	int i_state = 124;
+	mtype:restype C_RES = CODE;
+	int state = 0;
+
+
+	mtype:scope R_Scope;
+	int R_AC;
+	int R_i_state;
+	int R_Token;
+	int grant;
+	int R_data;
+
+	do
+	::state==0 ->
+		URS ? REQUEST,  R_Scope;
+		if
+		:: R_Scope == C_Scope ->
+			state = 1;
+		:: else ->
+			state = 8; //error
+		fi
+	::state==1 ->
+		CRA ! RESPONSE, C_CID, C_URI, i_state, C_RES;
+		state = 2;
+	::state==2 ->
+		AR ? RESPONSE, R_AC, R_i_state;
+		if 
+		:: R_i_state == i_state ->
+			state =3;
+		:: else ->
+			state = 8; //error
+		fi	
+	::state==3 ->
+		RT ! REQUEST, C_CID, C_URI, R_AC, AUTH;
+		state = 4;
+	::state==4 ->
+		ST ? RESPONSE, R_Token; 
+		state = 5;
+	::state==5 ->
+		AD ! REQUEST, R_Token;
+		state = 6;
+	::state== 6 ->
+		GD ? RESPONSE, grant;
+		if
+		:: grant == 1 ->
+			state = 7;
+		:: else ->
+			state = 8;
+		fi	
+	::state==7 ->
+		UDA ? RESPONSE, R_data;
+		state = 9; //done
+	od;
+}
+
+proctype Server() {
+
+	int timer = 0;
+	int state = 0;
+	int timeOut = 3;
+	int Token = 5245;
+	int data = 34;
+
+	int UR_CID;
+	int UR_URI;
+	int UR_AC;
+	mtype:grantype UR_GT;
+
+	int CR_CID;
+	int CR_URI;
+	int CR_AC;
+	mtype:grantype CR_GT;
+	int CR_Token;
+	
+	do
+	::state==0 ->
+		if
+		:: timer < timeOut ->
+			timer = timer + 1;
+			state = 0;
+		:: else ->
+			Token = (Token + 31) % 5000;
+			timer = 0;
+			state = 1;
+			RR ? RESPONSE, UR_CID, UR_URI, UR_AC, UR_GT;
+		fi
+
+	::state==1 ->
+		RT ? REQUEST, CR_CID, CR_URI, CR_AC, CR_GT; 
+		if
+		:: UR_CID == CR_CID  && UR_URI == CR_URI && UR_AC == CR_AC && UR_GT == CR_GT ->
+			ST ! RESPONSE, Token;
+			state = 2;
+		:: else ->
+			state = 7;
+		fi
+	::state==2 ->
+		AD ? REQUEST, CR_Token;
+		if
+		:: Token == CR_Token ->
+			GD ! RESPONSE, 1;
+			state = 3;
+		:: else ->
+			GD ! RESPONSE, 0;
+			state = 7;
+		fi
+	::state==3 ->
+		UDA ! RESPONSE, data;
+		state=0;
+	od
+}
+
+init {
+   atomic {
+        run User();
+        run Client();
+        run Server();
+}
+}
+
